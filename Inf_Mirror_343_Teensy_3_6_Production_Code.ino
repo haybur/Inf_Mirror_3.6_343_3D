@@ -39,11 +39,9 @@ AudioControlSGTL5000 audioShield; //xy=446.1999969482422,317
 								  //const int myInput = AUDIO_INPUT_MIC;
 
 int spectrumValue[15];
-int spectrumValueOld[15];
-int spectrumValueOldOld[15];
-int lowThresh, highThresh, midThresh;
-int ledx[NUM_LEDS], ledy[NUM_LEDS];                // Used for giving every LED an x and y coordinate
+int ledx[NUM_LEDS], ledy[NUM_LEDS];  // Used for giving every LED an x and y coordinate
 
+									 // cor10 = corner 10. cor10 = 105 means the 105th LED on the strip is at corner 10. Refer to drawing for corner numbers.
 int cor0 = 0, cor1 = 26, cor2 = 35, cor3 = 45, cor4 = 54, cor5 = 63, cor6 = 71, cor7 = 79, cor8 = 87, cor9 = 97, cor10 = 105;
 int cor11 = 121, cor12 = 138, cor13 = 147, cor14 = 172, cor15 = 197, cor16 = 206, cor17 = 222, cor18 = 240, cor19 = 248;
 int cor20 = 257, cor21 = 267, cor22 = 276, cor23 = 286, cor24 = 294, cor25 = 302, cor26 = 310, cor27 = 319, cor28 = 343;
@@ -113,7 +111,7 @@ int blueFadeVar;
 int meterMode = 1;
 elapsedMillis meterModeTimer;
 int meterModeDelayTime = 10000;
-int bottomDots[] = { cor10, cor12 };
+int bottomDots[] = { cor10, 139 };
 int bottomDotZones[] = { 1, 1 };
 double bottomDotSpeed;
 elapsedMillis bottomDotTime;
@@ -134,13 +132,6 @@ uint8_t colorTwo = 160;
 // PingPongSquares
 bool lowFreqSquare = 0;
 bool highFreqSquare = 0;
-
-// Inputs
-elapsedMillis pennyDelay;
-int pennyCounter;
-int masterBrightness;
-int pennyNew, pennyOld;
-int mode = 15;
 
 // Ambient Modes
 elapsedMillis time;
@@ -174,32 +165,67 @@ uint8_t highBeatCounter = 0;
 uint8_t musicState = 0;
 uint8_t musicStateOld = 0;
 
-// Transition
-bool transitionTime = false;
+//movingColorsToBeat is where different color pixels go around the outside of the entire design to the speed of the freq their color represents
+double redSpeed = 100;
+double blueSpeed = 100;
+double greenSpeed = 100;
 
+// time1 = red, time2 = green, time3 = blue;
+elapsedMillis time3;
+
+int redPositions[5] = { 0, 111, 151, 191, 231 };
+int bluePositions[5] = { 13, 124, 166, 206, 246 };
+int greenPositions[5] = { 25, 137, 177, 217, 328 };
+
+int arraySize = 5;
+int maxSpeed = 10; // 0 is minimum, higher number brings maxSpeed down
+int minSpeed = 200; // 400 is minimum, higher number brings minSpeed up
+					// End of moving colors to beat
 Button button1(buttonOne);
 Button button2(buttonTwo);
+//Button button3(reactiveSwitch);
+
+uint8_t masterBrightness;
+
+// COLOR PALLETTE STUFF
+CRGBPalette16 currentPalette;
+TBlendType    currentBlending;
+
+extern CRGBPalette16 myRedWhiteBluePalette;
+extern const TProgmemPalette16 myRedWhiteBluePalette_p PROGMEM;
+
+// Music Stats ///////////////////////////////////////////////////////////////////////////
+// The current average and standard deviation for each of 15 frequencies
+double average[14];
+double stDev[14];
+
+// The variables used to play a function within the lists above
+uint8_t musicWithNoBeatPatternNumber = 0;
+uint8_t currentLowBeatPatternNumber = 0;
+uint8_t currentSpectrumPatternNumber = 0;
+uint8_t currentPatternNumber = 0;
+uint8_t currentAmbPatternNumber = 0;
+uint8_t hue = 0;
+
+elapsedMillis silenceDuration;
+
+uint8_t beatDetected[14] = {};
 
 void setup() {
 	//pinMode(13, OUTPUT);
 	//digitalWrite(13, LOW);
 	button1.begin();
 	button2.begin();
+	//button3.begin();
 
 	pinMode(inputSwitch, INPUT_PULLUP);
 	pinMode(reactiveSwitch, INPUT_PULLUP);
 	if (digitalRead(inputSwitch) == 1) {
 		myInput = AUDIO_INPUT_LINEIN;
-		lowThresh = 250;  // old 400 but 300 as of 6/1
-		highThresh = 300; // old 450 but 350 as of 6/1
-		midThresh = 150;  // old 250
 		Serial.println("Input is Aux");
 	}
 	else {
 		myInput = AUDIO_INPUT_MIC;
-		lowThresh = 100;
-		highThresh = 100;
-		midThresh = 80;
 		Serial.println("Input is Mic");
 	}
 	// AUDIO STUFF
@@ -248,36 +274,54 @@ void setup() {
 	clearStats();
 	freq15.clear();
 
+	// COLOR PALETTE STUFF
+	currentBlending = LINEARBLEND;
+	//currentBlending = NOBLEND;
+
 	Serial.println("Setup Complete.");
 }
 
-// The current average and standard deviation for each of 15 frequencies
-double average[14];
-double stDev[14];
-
 // These are lists of functions that will be displayed during different types of music / no music.
-// Music is playing but no beats are being detected
-typedef void(*musicWithNoBeatPatternsList[])();
-musicWithNoBeatPatternsList musicWithNoBeatPatterns = { confetti, sixFrequencyGlitter, beatMeter, verticalBars, sixFrequencyGlitter };
 // No music is playing, so display an ambient function
 typedef void(*ambientPatternList[])();
-ambientPatternList ambientPatterns = { ambient_rainbow, ambient_rainbowFade, ambient_confetti, coordinates, rainbowBeat };
+ambientPatternList ambientPatterns = {
+	ambient_rainbow,
+	ambient_rainbowFade,
+	ambient_confetti,
+	coordinates,
+	movingColorsToBeat
+};
+// Music is playing but no beats are being detected
+typedef void(*musicWithNoBeatPatternsList[])();
+musicWithNoBeatPatternsList musicWithNoBeatPatterns = {
+	confetti,
+	sixFrequencyGlitter,
+	verticalBars,
+	sixFrequencyGlitter
+};
 // Both high frequency beats and low frequency beats are being detected
 typedef void(*spectrumPatternList[])();
-spectrumPatternList spectrumPatterns = { travelingDotsToHighAndLow, pingPongSquares, rainbowBeat, sixFrequencyGlitter, confetti, coordinatesToBeatExperimental, beatMeter };
+spectrumPatternList spectrumPatterns = {
+	verticalBars,
+	travelingDotsToHighAndLow,
+	sixFrequencyGlitter,
+	sixFrequencyGlitter_palette,
+	confetti,
+	coordinatesToBeatExperimental,
+	beatMeter
+};
 // Only beats in the low frequency are being detected
 typedef void(*lowBeatPatternList[])();
-lowBeatPatternList lowBeatPatterns = { travelingDotsToLowBeats, coordinatesToBeat, bouncingZack_withFade, coordinatesToBeatExperimental, circle_midOut_One, bouncingZack_withoutFade, circle_midOut_One_Experimental };
-
-// The variables used to play a function within the lists above
-uint8_t musicWithNoBeatPatternNumber = 0;
-uint8_t currentLowBeatPatternNumber = 0;
-uint8_t currentSpectrumPatternNumber = 0;
-uint8_t currentPatternNumber = 0;
-uint8_t currentAmbPatternNumber = 0;
-uint8_t hue = 0;
-
-elapsedMillis silenceDuration;
+lowBeatPatternList lowBeatPatterns = {
+	travelingDotsToLowBeats,
+	coordinatesToBeat,
+	bouncingZack_withFade,
+	coordinatesToBeatExperimental,
+	circle_midOut_One,
+	bouncingZack_withoutFade,
+	circle_midOut_One_Experimental,
+	circle_midOut_One_Set_Color
+};
 
 // These functions choose a random pattern within the lists above
 void nextMusicWithNoBeatPattern() {
@@ -351,20 +395,9 @@ void fillStats() {
 		highBeats = false;
 	}
 	else silence = false;
-
-	//Serial.print("  Count: ");
-	//Serial.print(freq2.count());
-	//Serial.print("  Average: ");
-	//Serial.print(freq2.average(), 4);
-	//Serial.print("  Std deviation: ");
-	//Serial.print(freq2.pop_stdev(), 4);
-	//Serial.print("   Value: ");
-	//Serial.print(fft1024.read(2, 3) * 1000);
-	//Serial.println();
 }
 
-int beatDetected[14] = {};
-void beatDetection() {
+void beatDetection(bool autoSwitch) {
 	// 0 = no beat detected
 	// 1 = beat hasn't dropped / reset yet
 	// 2 = beat detected
@@ -379,7 +412,6 @@ void beatDetection() {
 		}
 		// This is where 1's get reset to 0. If beat is not detected in that frequency, set it's status to 0.
 		else
-			//if (spectrumValue[i] < average[i] + 1*stDev[i]) 
 			beatDetected[i] = 0;
 	}
 
@@ -399,44 +431,71 @@ void beatDetection() {
 		midBeats = (midBeatCounter > 5) ? true : false;
 		highBeats = (highBeatCounter > 5) ? true : false;
 
-		lowBeatCounter = 0;
-		midBeatCounter = 0;
-		highBeatCounter = 0;
-
-		/*  if (lowBeats > 5 && lowBeats > 2 * highBeats) musicState = 2;
-		else if ()*/
+		//lowBeatCounter = 0;
+		//midBeatCounter = 0;
+		//highBeatCounter = 0;
 
 		// loop() {} uses music states to choose which function list to pull a function from
-		if (lowBeats && highBeats) musicState = 3;
-		else if (lowBeats) musicState = 2;
-		else if (silence) musicState = 0;
-		else if (!silence && !lowBeats && !midBeats && !highBeats) musicState = 4;
-		else musicState = 1;
-
-		if (musicState == musicStateOld) {
-			if (musicState == 1 || musicState == 3)
+		if (autoSwitch) {
+			// If low and high beats present
+			if (lowBeats && highBeats) {
+				musicState = 3;
 				nextSpectrumPattern();
-			else if (musicState == 2)
+			}
+			// If only low beats present
+			else if (lowBeats) {
+				musicState = 2;
 				nextLowBeatPattern();
-			else nextAmbPattern();
+			}
+			// If silent
+			else if (silence) {
+				musicState = 0;
+				nextAmbPattern();
+			}
+			// If sound but no beats
+			else if (!silence && !lowBeats && !midBeats && !highBeats) {
+				musicState = 1;
+				nextMusicWithNoBeatPattern();
+			}
+			// If just middle or just high beats present
+			else {
+				musicState = 1;
+				nextMusicWithNoBeatPattern();
+			}
+
+			switch (musicStateOld) {
+			case 0:
+				nextAmbPattern();
+				break;
+			case 1:
+				nextMusicWithNoBeatPattern();
+				break;
+			case 2:
+				while (lowBeatCounter > 10 && (currentLowBeatPatternNumber == 1 || currentLowBeatPatternNumber == 3)) {
+					nextLowBeatPattern();
+				}
+				break;
+			case 3:
+				nextSpectrumPattern();
+				break;
+			}
+
+			// Replaced all this with the switch (case) above
+			//nextSpectrumPattern();
+			//nextLowBeatPattern();
+			//// While there are a lot of beats, and the mode is either coordiantesToBeat(_experimental), cycle the mode
+			//while (lowBeatCounter > 10 && (currentLowBeatPatternNumber == 1 || currentLowBeatPatternNumber == 3)) {
+			//	nextLowBeatPattern();
+			//}
+			//nextAmbPattern();
+			//nextMusicWithNoBeatPattern();
+
+			// Reset counters
+			lowBeatCounter = 0;
+			midBeatCounter = 0;
+			highBeatCounter = 0;
 		}
 	}
-}
-
-void transition() {
-	slope = 0;
-	yint = 28 - var;
-	if (transitionTime) {
-		var++;
-
-		delay(8);
-
-		for (int i = 0; i < NUM_LEDS; i++) {
-			if (slope * ledy[i] + yint - ledx[i] < 1 && slope *ledy[i] + yint - ledx[i] > -1) leds[i] = CHSV(255, 255, 255);
-		}
-	}
-	if (yint == -28)
-		transitionTime = false;
 }
 
 void loop() {
@@ -444,159 +503,60 @@ void loop() {
 	LEDS.setBrightness(masterBrightness);
 
 	fillStats();
-	beatDetection();
+	beatDetection(autoSwitch);
 
-	// SECOND PENNY = autoswitching toggle
+	// Button for autoswitching toggle
 	if (button1.released()) {
-	  leds[0] = CRGB::White;
-	  LEDS.show();
-	  autoSwitch = !autoSwitch;
+		leds[0] = CRGB::White;
+		LEDS.show();
+		autoSwitch = !autoSwitch;
 	}
-	if (autoSwitch == 1) {  // If in autoswitch mode, change the mode every 20 seconds
-	  if (digitalRead(inputSwitch) == 1) {   // If switch is in position for music reacting mode, do this
-		  if (button2.released()) {
-	      //mode++;
-	      nextAmbPattern();
-	      nextMusicWithNoBeatPattern();
-	      nextLowBeatPattern();
-	      nextSpectrumPattern();
+	if (digitalRead(reactiveSwitch) == 1) {   // If switch is in position for music reacting mode, do this
+		if (button2.released()) {
+			nextAmbPattern();
+			nextMusicWithNoBeatPattern();
+			nextLowBeatPattern();
+			nextSpectrumPattern();
 
-	      leds[0] = CRGB::White;
-	      LEDS.show();
-	    }
-	    if (musicState == 1 || musicState == 3) spectrumPatterns[currentSpectrumPatternNumber]();
-	    else if (musicState == 4) musicWithNoBeatPatterns[musicWithNoBeatPatternNumber]();
-	    else if (musicState == 0) ambientPatterns[currentAmbPatternNumber]();
-	    else lowBeatPatterns[currentLowBeatPatternNumber]();
-	  }
-	else {  // Else, if the switch is in position for ambient modes, do this
-	  if (button2.released()) nextAmbPattern();
-	  ambientPatterns[currentAmbPatternNumber]();
+			leds[0] = CRGB::White;
+			LEDS.show();
 		}
+		switch (musicState) {
+		default:
+			spectrumPatterns[currentSpectrumPatternNumber]();
+			break;
+		case 0:
+			ambientPatterns[currentAmbPatternNumber]();
+			break;
+		case 1:
+			musicWithNoBeatPatterns[musicWithNoBeatPatternNumber]();
+			break;
+		case 2:
+			lowBeatPatterns[currentLowBeatPatternNumber]();
+			break;
+		case 3:
+			spectrumPatterns[currentSpectrumPatternNumber]();
+			break;
+		case 4:
+			musicWithNoBeatPatterns[musicWithNoBeatPatternNumber]();
+			break;
+		}
+		// Replaced by the switch case ^
+		//if (musicState == 3) spectrumPatterns[currentSpectrumPatternNumber]();
+		//else if (musicState == 4) musicWithNoBeatPatterns[musicWithNoBeatPatternNumber]();
+		//else if (musicState == 0) ambientPatterns[currentAmbPatternNumber]();
+		//else lowBeatPatterns[currentLowBeatPatternNumber]();
 	}
-	//else {
-	//  ambient_confetti();
-	//}
+	else {  // Else, if the switch is in position for ambient modes, do this
+		ambientPatterns[currentAmbPatternNumber]();
+		if (button2.released()) nextAmbPattern();
+	}
 
-
-	//  switch (mode)
-	//  {
-	//  default:
-	//    mode = 1;
-	//    break;
-	//  case 1:
-	//    //coordinatesToBeat();
-	//    coordinatesToBeatExperimental();
-	//    break;
-	//  case 2:
-	//    circle_midOut_One();
-	//    break;
-	//  case 3:
-	//    verticalBars();
-	//    break;
-	//  case 4:
-	//    pingPongSquares();
-	//    //randomSquares();
-	//    break;
-	//  case 5:
-	//    bouncingZack(254, .3);
-	//    break;
-	//  case 6:
-	//    bouncingZack(255, .3);
-	//    break;
-	//  case 7:
-	//    travelingDots(1);
-	//    break;
-	//  case 8:
-	//    travelingDots(2);
-	//    break;
-	//  case 9:
-	//    travelingDots(3);
-	//    break;
-	//  case 10:
-	//    rainbowBeat();
-	//    break;
-	//  case 11:
-	//    confetti();
-	//    break;
-	//  case 12:
-	//    coordinatesToBeat();
-	//    break;
-	//  case 13:
-	//    coordinatesToBeatExperimental();
-	//    break;
-	//  case 14:
-	//    sixFrequencyGlitter();
-	//    break;
-	//  case 15:
-	//    beatMeter();
-	//    break;
-	//  case 16:
-	//    circle_midOut_One_Experimental();
-	//    break;
-	//  case 17:
-	//    mode = 1;
-	//    break;
-	//  }
-	//}
-	//else {
-	//  if (pennyPress(1)) mode++;
-	//  if (mode >= 8) mode = 1;
-	//  switch (mode) {
-	//  case 1:
-	//    ambient_confetti();
-	//    break;
-	//  case 2:
-	//    ambient_rainbowFade();
-	//    break;
-	//  case 3:
-	//    ambient_solidColor();
-	//    break;
-	//  case 4:
-	//    var = 0;
-	//    mode = 5;
-	//    break;
-	//  case 5:
-	//    coordinates();
-	//    break;
-	//  case 6:
-	//    ambient_rainbow();
-	//    break;
-	//  case 7:
-	//    mode = 1;
-	//    break;
-	//  }
-	//}
 
 	////// DIAGNOSTIC FUNCTIONS
 	//forTesting();
 	//displayCorners();
 	//printSpectrum();
-}
-
-void getSpectrum(int spectrumValue[], int spectrumValueOld[], int spectrumValueOldOld[]) {
-
-	for (int i = 0; i < 15; i++) {
-		spectrumValueOldOld[i] = spectrumValueOld[i];    //Create data set 3
-		spectrumValueOld[i] = spectrumValue[i];          //Create data set 2
-	}
-	//Create data set 1
-	spectrumValue[0] = fft1024.read(0) * 1000;           //Old value 0
-	spectrumValue[1] = fft1024.read(1) * 1000;
-	spectrumValue[2] = fft1024.read(2, 3) * 1000;         //Old Value 1
-	spectrumValue[3] = fft1024.read(4, 6) * 1000;
-	spectrumValue[4] = fft1024.read(7, 10) * 1000;        //Old Value 2
-	spectrumValue[5] = fft1024.read(11, 15) * 1000;
-	spectrumValue[6] = fft1024.read(16, 22) * 1000;       //Old Value 3
-	spectrumValue[7] = fft1024.read(23, 32) * 1000;
-	spectrumValue[8] = fft1024.read(33, 46) * 1000;       //Old Value 4
-	spectrumValue[9] = fft1024.read(47, 66) * 1000;
-	spectrumValue[10] = fft1024.read(67, 93) * 1000;      //Old Value 5
-	spectrumValue[11] = fft1024.read(94, 131) * 1000;
-	spectrumValue[12] = fft1024.read(132, 184) * 1000;    //Old Value 6
-	spectrumValue[13] = fft1024.read(185, 257) * 1000;
-	spectrumValue[14] = fft1024.read(258, 359) * 1000;    //Old Value 7
-	spectrumValue[15] = fft1024.read(360, 511) * 1000;
 }
 
 void printNumber(float n) {
@@ -636,6 +596,57 @@ void printSpectrum() {
 	}
 }
 
+DEFINE_GRADIENT_PALETTE(usa_p) {
+	0, 255, 0, 0,   //red
+		128, 255, 255, 255,   //white
+		255, 0, 0, 255   // blue
+};
+
+void circle_midOut_One_Set_Color() {   // This mode shows a circle expanding from the middle
+									   //CRGBPalette16 currentPalette = myRedWhiteBluePalette_p;
+	currentPalette = usa_p;
+
+	if (radius < 36) {
+		counter++;  // This exists to make the animation slower. hue only gets incremented every 3 goes arounds
+		if (counter >= 2) {
+			hue--;
+			counter = 0;
+		}
+	}
+
+	if (beatDetected[2] == 2) {
+		radius = 10;
+		time1 = 0;
+	}
+
+	//brightness = 255 - (radius - 10) * 6;   // Makes brightness decrease as radius goes up (radius goes up)
+
+	if (time1 > radius - 10) {
+		radius = radius + .5;
+		time1 = 0;
+	}
+
+	switch (side) {
+	case 0:
+		for (int i = cor0; i < cor14; i++) {
+			//if (pow(ledx[i], 2) + pow(ledy[i], 2) - pow(radius, 2) > -20 && pow(ledx[i], 2) + pow(ledy[i], 2) - pow(radius, 2) < 20) leds[i] += CHSV(map(radius,0,36,0,255)+hue, 255, 255);
+			if (pow(ledx[i], 2) + pow(ledy[i], 2) - pow(radius, 2) > -20 && pow(ledx[i], 2) + pow(ledy[i], 2) - pow(radius, 2) < 20) leds[i] = ColorFromPalette(currentPalette, map(radius, 0, 36, 0, 255) + hue, 255, currentBlending);
+		}
+		side = 1;
+		break;
+	case 1:
+		for (int i = cor14; i < cor28; i++) {
+			//if (pow(ledx[i], 2) + pow(ledy[i], 2) - pow(radius, 2) > -20 && pow(ledx[i], 2) + pow(ledy[i], 2) - pow(radius, 2) < 20) leds[i] += CHSV(map(radius, 0, 36, 0, 255)+hue, 255, 255);
+			if (pow(ledx[i], 2) + pow(ledy[i], 2) - pow(radius, 2) > -20 && pow(ledx[i], 2) + pow(ledy[i], 2) - pow(radius, 2) < 20) leds[i] = ColorFromPalette(currentPalette, map(radius, 0, 36, 0, 255) + hue, 255, currentBlending);
+		}
+		side = 0;
+		break;
+	}
+
+	fadeAll(250);
+	LEDS.show();
+}
+
 void circle_midOut_One() {   // This mode shows a circle expanding from the middle
 
 	if (beatDetected[2] == 2) {
@@ -673,11 +684,8 @@ void circle_midOut_One() {   // This mode shows a circle expanding from the midd
 }
 
 void bouncingZack(int fade, double friction) {
-	getSpectrum(spectrumValue, spectrumValueOld, spectrumValueOldOld);
-
-	if (spectrumValueOld[2] > 1.3 * spectrumValueOldOld[2] && spectrumValueOld[2] > spectrumValue[2] * .8 && spectrumValueOld[2] > lowThresh) {
-		//if (beatDetectRed(spectrumValue[2], spectrumValueOld[2], spectrumValueOldOld[2]) == 1) {
-		speed1 -= .85*speed1;
+	if (beatDetected[2] == 2) {
+		speed1 -= .85*speed1; // old is .85
 	}
 
 	if (time1 > speed1) { // If enough time has passed (time1), then move the light
@@ -689,6 +697,7 @@ void bouncingZack(int fade, double friction) {
 	switch (z) {
 	case 1: // Move left on bottom and up on right
 		leds[cor13 + mainLight] = CHSV(hue, 255, 255);
+		// The next 4 lines have to do with the trailing and fading tail on only 1 side
 		if (cor13 + mainLight < cor15 - 1) leds[cor13 + mainLight + 1] = CHSV(hue + 1 * 2, 255, 200);
 		if (cor13 + mainLight < cor15 - 2) leds[cor13 + mainLight + 2] = CHSV(hue + 2 * 2, 255, 140);
 		if (cor13 + mainLight < cor15 - 3) leds[cor13 + mainLight + 3] = CHSV(hue + 3 * 2, 255, 90);
@@ -729,141 +738,24 @@ void bouncingZack(int fade, double friction) {
 
 	hue++;
 	if (hue == 255) hue = 0;
-	speed1 = constrain(speed1 + friction + .01*speed1, 0, 200);
+	speed1 = constrain(speed1 + friction + .01*speed1, 0, 200);  // old is .01
 	var = map(speed1, 0, 200, 244, 250);
-	fadeBlue(250);
+	fade_Inside_Big_Square(250);
 	fadeRange(fade, cor1, cor13); // Bottom right square fade
 	fadeRange(fade, cor15, cor27); // Top left sqaure fade
 	LEDS.show();
 }
 
 void bouncingZack_withFade() {
-	bouncingZack(254, .3);
-	//double friction = .3;
-
-	//if (beatDetected[2] == 2) {
-	//  //if (beatDetectRed(spectrumValue[2], spectrumValueOld[2], spectrumValueOldOld[2]) == 1) {
-	//  speed1 -= .85*speed1;
-	//}
-
-	//if (time1 > speed1) { // If enough time has passed (time1), then move the light
-	//  mainLight++;
-	//  topRightVar++;
-	//  botLeftVar++;
-	//  time1 = 0;
-	//}
-	//switch (z) {
-	//case 1: // Move left on bottom and up on right
-	//  leds[cor13 + mainLight] = CHSV(hue, 255, 255);
-	//  if (cor13 + mainLight < cor15 - 1) leds[cor13 + mainLight + 1] = CHSV(hue + 1 * 2, 255, 200);
-	//  if (cor13 + mainLight < cor15 - 2) leds[cor13 + mainLight + 2] = CHSV(hue + 2 * 2, 255, 140);
-	//  if (cor13 + mainLight < cor15 - 3) leds[cor13 + mainLight + 3] = CHSV(hue + 3 * 2, 255, 90);
-	//  if (cor13 + mainLight < cor15 - 4) leds[cor13 + mainLight + 4] = CHSV(hue + 4 * 2, 255, 65);
-
-	//  if (cor1 - mainLight > 0) {
-	//    leds[cor1 - mainLight - 1] = CHSV(hue, 255, 255);  // As long as the light, starting at cor3 and moving right, is still infront of the bottom right corner, we're good
-	//    if (cor1 - mainLight > 1) {
-	//      leds[cor1 - mainLight - 2] = CHSV(hue, 0, 20);  // Light up the LED in front of the dot if there is room (aka it hasn't hit the end yet)
-	//    }
-	//  }
-	//  else leds[cor28 - mainLight + 26] = CHSV(hue, 255, 255);
-	//  if (cor13 + mainLight == cor15 - 1) {
-	//    topRightVar = 0;
-	//    mainLight = 0;
-	//    topRightColor = hue;
-	//    z = 2;
-	//  }
-	//  break;
-	//case 2: // Move right on top and down on left
-	//  leds[cor15 - 1 - mainLight] = CHSV(hue, 255, 255);
-	//  if (cor15 - 1 - mainLight > cor13) leds[cor15 - 2 - mainLight] = CHSV(hue + 1 * 2, 255, 200);
-	//  if (cor15 - 1 - mainLight > cor13 + 1) leds[cor15 - 3 - mainLight] = CHSV(hue + 2 * 2, 255, 140);
-	//  if (cor15 - 1 - mainLight > cor13 + 2) leds[cor15 - 4 - mainLight] = CHSV(hue + 3 * 2, 255, 90);
-	//  if (cor15 - 1 - mainLight > cor13 + 3) leds[cor15 - 5 - mainLight] = CHSV(hue + 4 * 2, 255, 65);  // Don't know how to fix it
-	//  if (cor27 + mainLight < NUM_LEDS) leds[cor27 + mainLight] = CHSV(hue, 255, 255);
-	//  else leds[cor0 + mainLight - 24] = CHSV(hue, 255, 255);
-	//  if (cor15 - 1 - mainLight == cor13) {
-	//    botLeftVar = 0;
-	//    mainLight = 0;
-	//    botLeftColor = hue;
-	//    z = 1;
-	//  }
-	//  break;
-	//}
-
-	//bouncingZackSmallSquares(botLeftColor, topRightColor);
-
-	//hue++;
-	//speed1 = constrain(speed1 + friction + .01*speed1, 0, 200);
-	//var = map(speed1, 0, 200, 244, 250);
-	//fadeBlue(250);
-	//fadeRange(254, cor1, cor13); // Bottom right square fade
-	//fadeRange(254, cor15, cor27); // Top left sqaure fade
-	//LEDS.show();
+	bouncingZack(254, .5);
+	fadeRange(254, cor1, cor5);
+	fadeRange(254, cor19, cor23);
 }
 
 void bouncingZack_withoutFade() {
-	double friction = .3;
-
-	if (beatDetected[2] == 2) {
-		//if (beatDetectRed(spectrumValue[2], spectrumValueOld[2], spectrumValueOldOld[2]) == 1) {
-		speed1 -= .85*speed1;
-	}
-
-	if (time1 > speed1) { // If enough time has passed (time1), then move the light
-		mainLight++;
-		topRightVar++;
-		botLeftVar++;
-		time1 = 0;
-	}
-	switch (z) {
-	case 1: // Move left on bottom and up on right
-		leds[cor13 + mainLight] = CHSV(hue, 255, 255);
-		if (cor13 + mainLight < cor15 - 1) leds[cor13 + mainLight + 1] = CHSV(hue + 1 * 2, 255, 200);
-		if (cor13 + mainLight < cor15 - 2) leds[cor13 + mainLight + 2] = CHSV(hue + 2 * 2, 255, 140);
-		if (cor13 + mainLight < cor15 - 3) leds[cor13 + mainLight + 3] = CHSV(hue + 3 * 2, 255, 90);
-		if (cor13 + mainLight < cor15 - 4) leds[cor13 + mainLight + 4] = CHSV(hue + 4 * 2, 255, 65);
-
-		if (cor1 - mainLight > 0) {
-			leds[cor1 - mainLight - 1] = CHSV(hue, 255, 255);  // As long as the light, starting at cor3 and moving right, is still infront of the bottom right corner, we're good
-			if (cor1 - mainLight > 1) {
-				leds[cor1 - mainLight - 2] = CHSV(hue, 0, 20);  // Light up the LED in front of the dot if there is room (aka it hasn't hit the end yet)
-			}
-		}
-		else leds[cor28 - mainLight + 26] = CHSV(hue, 255, 255);
-		if (cor13 + mainLight == cor15 - 1) {
-			topRightVar = 0;
-			mainLight = 0;
-			topRightColor = hue;
-			z = 2;
-		}
-		break;
-	case 2: // Move right on top and down on left
-		leds[cor15 - 1 - mainLight] = CHSV(hue, 255, 255);
-		if (cor15 - 1 - mainLight > cor13) leds[cor15 - 2 - mainLight] = CHSV(hue + 1 * 2, 255, 200);
-		if (cor15 - 1 - mainLight > cor13 + 1) leds[cor15 - 3 - mainLight] = CHSV(hue + 2 * 2, 255, 140);
-		if (cor15 - 1 - mainLight > cor13 + 2) leds[cor15 - 4 - mainLight] = CHSV(hue + 3 * 2, 255, 90);
-		if (cor15 - 1 - mainLight > cor13 + 3) leds[cor15 - 5 - mainLight] = CHSV(hue + 4 * 2, 255, 65);  // Don't know how to fix it
-		if (cor27 + mainLight < NUM_LEDS) leds[cor27 + mainLight] = CHSV(hue, 255, 255);
-		else leds[cor0 + mainLight - 24] = CHSV(hue, 255, 255);
-		if (cor15 - 1 - mainLight == cor13) {
-			botLeftVar = 0;
-			mainLight = 0;
-			botLeftColor = hue;
-			z = 1;
-		}
-		break;
-	}
-
-	bouncingZackSmallSquares(botLeftColor, topRightColor);
-
-	hue++;
-	speed1 = constrain(speed1 + friction + .01*speed1, 0, 200);
-	var = map(speed1, 0, 200, 244, 250);
-	fadeBlue(250);
-	fadeRange(255, cor1, cor13); // Bottom right square fade
-	fadeRange(255, cor15, cor27); // Top left sqaure fade
-	LEDS.show();
+	bouncingZack(255, .5);
+	fadeRange(254, cor1, cor5);
+	fadeRange(254, cor19, cor23);
 }
 
 void bouncingZackSmallSquares(int botLeftColor, int topRightColor) {
@@ -899,7 +791,7 @@ void fadeGreen(int fadeVar) {
 	for (int i = cor23; i < cor25; i++) leds[i].nscale8(fadeVar);
 }
 
-void fadeBlue(int fadeVar) {
+void fade_Inside_Big_Square(int fadeVar) {
 	for (int i = cor0; i < cor1; i++) leds[i].nscale8(fadeVar);
 	for (int i = cor5; i < cor7; i++) leds[i].nscale8(fadeVar);
 	for (int i = cor13; i < cor15; i++) leds[i].nscale8(fadeVar);
@@ -908,119 +800,6 @@ void fadeBlue(int fadeVar) {
 
 void fadeRange(int fadeVar, int start, int stop) {
 	for (int i = start; i < stop; i++) leds[i].nscale8(fadeVar);
-}
-
-void findSide(int part, int &start, int &end) {
-	switch (part) {
-	case 1:
-		start = cor2;
-		end = cor3;
-		break;
-	case 2:
-		start = cor3;
-		end = cor4;
-		break;
-	case 3:
-		start = cor4;
-		end = cor5;
-		break;
-	case 4:
-		start = cor5;
-		end = cor6;
-		break;
-	case 5:
-		start = cor6;
-		end = cor7;
-		break;
-	case 6:
-		start = cor7;
-		end = cor8;
-		break;
-	case 7:
-		start = cor8;
-		end = cor9;
-		break;
-	case 8:
-		start = cor9;
-		end = cor10;
-		break;
-	case 9:
-		start = cor10;
-		end = cor11;
-		break;
-	case 10:
-		start = cor11;
-		end = cor12;
-		break;
-	case 11:
-		start = cor12;
-		end = cor13;
-		break;
-	case 12:
-		start = cor13;
-		end = cor14;
-		break;
-	case 13:
-		start = cor14;
-		end = cor15;
-		break;
-	case 14:
-		start = cor15;
-		end = cor16;
-		break;
-	case 15:
-		start = cor16;
-		end = cor17;
-		break;
-	case 16:
-		start = cor17;
-		end = cor18;
-		break;
-	case 17:
-		start = cor18;
-		end = cor19;
-		break;
-	case 18:
-		start = cor19;
-		end = cor20;
-		break;
-	case 19:
-		start = cor20;
-		end = cor21;
-		break;
-	case 20:
-		start = cor21;
-		end = cor22 - 1;
-		break;
-	}
-}
-
-int beatDetect(int freq) {
-	int returnThis = 0;
-	if (freq == 2) {
-		if (spectrumValueOld[freq] > 1.3 * spectrumValueOldOld[freq] && spectrumValueOld[freq] > spectrumValue[freq] * .8 && spectrumValueOld[freq] > lowThresh) {
-			//return 1;
-			returnThis = 1;
-		}
-	}
-	else if (freq == 8) {
-		if (spectrumValue[freq] > 1.4 * spectrumValueOld[freq] && spectrumValue[freq] > midThresh) {
-			returnThis = 1;
-			//return 1;
-		}
-	}
-	else if (freq == 12) {
-		if (spectrumValueOld[freq] > 1.3 * spectrumValueOldOld[freq] && spectrumValueOld[freq] > spectrumValue[freq] * .8 && spectrumValueOld[freq] > highThresh - 100) {
-			returnThis = 1;
-			//return 1;
-		}
-	}
-	else {
-		if (spectrumValue[freq] > 1.4 * spectrumValueOld[freq] && spectrumValueOld[freq] > spectrumValue[freq] * .8 && spectrumValue[freq] > midThresh) {
-			return 1;
-		}
-	}
-	return returnThis;
 }
 
 void fadeAll(int fadeVar) {
@@ -1305,33 +1084,73 @@ void coordinates() {
 	LEDS.show();
 }
 
-void rainbowBeat() {
-	//a = analogRead(8, 0, 1023, 0, 10);
-	a = 2;
+// THIS IS THE V2, which has too many colors mixing too much and it doesn't look good
+void movingColorsToBeat() {
+	redSpeed = 200;
+	greenSpeed = 200;
+	blueSpeed = 200;
 
-	counter++;  // This exists to make the animation slower. hue only gets incremented every 3 goes arounds
-	if (counter == 6) {
-		hue++;
-		counter = 0;
+	//if (beatDetected[2] == 2) {
+	//	redSpeed -= .95*redSpeed;
+	//}
+	//if (beatDetected[8] == 2) {
+	//	blueSpeed -= .80*blueSpeed;
+	//}
+	//if (beatDetected[12] == 2) {
+	//	greenSpeed -= .80*greenSpeed;
+	//}
+
+	// Move the red dots
+	if (time1 > redSpeed) {
+		for (int i = 0; i < arraySize; i++) {
+			redPositions[i] = redPositions[i] + 1;
+			if (redPositions[i] == cor1)
+				redPositions[i] = cor9;
+			if (redPositions[i] == cor19)
+				redPositions[i] = cor27;
+			if (redPositions[i] > 342)
+				redPositions[i] = 0;
+		}
+		time1 = 0;
 	}
-	fill_rainbow(leds, NUM_LEDS, hue, 5);
-
-	if (beatDetected[2] == 2) {
-		r = 0;
+	// Move the green dots
+	if (time2 > greenSpeed) {
+		for (int i = 0; i < arraySize; i++) {
+			greenPositions[i] = greenPositions[i] + 1;
+			if (greenPositions[i] == cor1)
+				greenPositions[i] = cor9;
+			if (greenPositions[i] == cor19)
+				greenPositions[i] = cor27;
+			if (greenPositions[i] > 342)
+				greenPositions[i] = 0;
+		}
+		time2 = 0;
 	}
-	if (beatDetected[8] == 2) {
-		b = 0;
+	// Move the blue dots
+	if (time3 > blueSpeed) {
+		for (int i = 0; i < arraySize; i++) {
+			bluePositions[i] = bluePositions[i] + 1;
+			if (bluePositions[i] == cor1)
+				bluePositions[i] = cor9;
+			if (bluePositions[i] == cor19)
+				bluePositions[i] = cor27;
+			if (bluePositions[i] > 342)
+				bluePositions[i] = 0;
+		}
+		time3 = 0;
 	}
-	if (beatDetected[12] == 2) {
-		g = 0;
+
+	//redSpeed = constrain(redSpeed + .3 + .07*redSpeed, 0, 200);
+	//greenSpeed = constrain(greenSpeed + .3 + .07*greenSpeed, 0, 200);
+	//blueSpeed = constrain(blueSpeed + .3 + .07*blueSpeed, 0, 200);
+
+	for (int i = 0; i < arraySize; i++) {
+		leds[redPositions[i]] += CRGB(255 - redSpeed, 0, 0);
+		leds[greenPositions[i]] += CRGB(0, 255 - greenSpeed, 0);
+		leds[bluePositions[i]] += CRGB(0, 0, 255 - blueSpeed);
 	}
 
-	if (r < 255) r = constrain(r + a, 0, 180);
-	if (g < 255) g = constrain(g + a, 0, 170);
-	if (b < 255) b = constrain(b + a, 0, 170);
-
-	for (int i = 0; i < NUM_LEDS; i++) leds[i] -= CRGB(r, g, b);
-
+	fadeAll(249);
 	LEDS.show();
 }
 
@@ -1348,12 +1167,12 @@ void coordinatesToBeat() {
 	switch (coordMode) {
 	case 0:     ////// SWEEPING UP TO THE RIGHT
 		slope = -1;
-		yint = -52 + var;
+		yint = -51 + var;
 		var++;
 		break;
 	case 1:      ////// SWEEPING DOWN TO THE LEFT
 		slope = -1;
-		yint = 53 - var;
+		yint = 51 - var;
 		var++;
 		break;
 	case 2:      ////// SWEEPING UP FROM THE BOTTOM
@@ -1473,28 +1292,28 @@ void coordinatesToBeatExperimental() {
 	case 3:              ////// SWEEPING UP FROM THE BOTTOM
 		slope = 0;
 		yint = -27 + var;
-		delay(8);            /// Delay to make it take about the same time to sweep up/down as it takes to go diagonal
+		delay(16);            /// Delay to make it take about the same time to sweep up/down as it takes to go diagonal
 		if (var > 52) sweepStatus = true;
 		else sweepStatus = false;
 		break;
 	case 4:              ////// SWEEPING DOWN FROM THE TOP
 		slope = 0;
 		yint = 27 - var;
-		delay(8);
+		delay(16);  // OLD DELAY VALUE IS 8, FOR THE TEENSY 3.2
 		if (var > 52) sweepStatus = true;
 		else sweepStatus = false;
 		break;
 	case 5:              ////// SWEEPING LEFT TO RIGHT
 		slope = 0;
 		yint = -26 + var;
-		delay(8);
+		delay(16);
 		if (var > 52) sweepStatus = true;
 		else sweepStatus = false;
 		break;
 	case 6:       ////// SWEEPING RIGHT TO LEFT
 		slope = 0;
 		yint = 26 - var;
-		delay(8);
+		delay(16);
 		if (var > 52) sweepStatus = true;
 		else sweepStatus = false;
 		break;
@@ -1544,7 +1363,7 @@ void coordinatesToBeatExperimental() {
 		}
 	}
 
-	speed = constrain(speed + .1 + .01*speed, 0, 200);
+	speed = constrain(speed + .1 + .02*speed, 0, 200); // old is .01
 	leds[0] = leds[1];  // led[0] was not responding, not sure why
 	LEDS.show();
 }
@@ -1582,60 +1401,6 @@ void displayCorners() {
 	LEDS.show();
 }
 
-void dynamicFading() {
-	getSpectrum(spectrumValue, spectrumValueOld, spectrumValueOldOld);
-	//val = map(analogRead(8), 0, 1023, 0, 100);
-	//LEDS.setBrightness(val);
-
-	if (beatDetect(8)) {
-		lightSide(1, 160, 255, 255, 0, 0);
-		lightSide(4, 160, 255, 255, 0, 0);
-		lightSide(5, 160, 255, 255, 0, 0);
-		lightSide(10, 160, 255, 255, 0, 0);
-		lightSide(11, 160, 255, 255, 0, 0);
-		lightSide(17, 160, 255, 255, 0, 0);
-		lightSide(16, 160, 255, 255, 0, 0);
-		lightSide(20, 160, 255, 255, 0, 0);
-		Bcounter = Bcounter - 15;
-	}
-
-	if (beatDetect(2)) {
-		lightSide(2, 0, 255, 255, 0, 0);
-		lightSide(3, 0, 255, 255, 0, 0);
-		lightSide(6, 0, 255, 255, 0, 0);
-		lightSide(7, 0, 255, 255, 0, 0);
-		lightSide(8, 0, 255, 255, 0, 0);
-		lightSide(9, 0, 255, 255, 0, 0);
-		Rcounter = Rcounter - 15;
-	}
-
-	//if (beatDetect(12)) {
-	if (spectrumValueOld[12] > 1.7 * spectrumValueOldOld[12] && spectrumValueOld[12] > spectrumValue[12] * .8 && spectrumValueOld[12] > highThresh) {
-		lightSide(14, 96, 255, 255, 0, 0);
-		lightSide(18, 96, 255, 255, 0, 0);
-		lightSide(12, 96, 255, 255, 0, 0);
-		lightSide(13, 96, 255, 255, 0, 0);
-		lightSide(14, 96, 255, 255, 0, 0);
-		lightSide(15, 96, 255, 255, 0, 0);
-		Gcounter = Gcounter - 15;
-	}
-
-	Rcounter = constrain(Rcounter, 0, 100);
-	Gcounter = constrain(Gcounter, 0, 100);
-	Bcounter = constrain(Bcounter, 0, 100);
-	redFadeVar = map(constrain(Rcounter, 0, 100), 1, 100, 180, 253);
-	greenFadeVar = map(constrain(Gcounter, 0, 100), 1, 100, 180, 253);
-	blueFadeVar = map(constrain(Bcounter, 0, 100), 1, 100, 180, 253);
-	if (Bcounter < 100) Bcounter++;
-	if (Rcounter < 100) Rcounter++;
-	if (Gcounter < 100) Gcounter++;
-	fadeRed(redFadeVar);
-	fadeBlue(blueFadeVar);
-	fadeGreen(greenFadeVar);
-
-	LEDS.show();
-}
-
 void travelingDotsToLowBeats() {
 	if (beatDetected[2] == 2) {
 		bottomDotSpeed -= .85*bottomDotSpeed;
@@ -1649,7 +1414,7 @@ void travelingDotsToLowBeats() {
 	bottomDotSpeed = constrain(bottomDotSpeed + .2 + .01*bottomDotSpeed, 0, 200);
 	topDotSpeed = constrain(topDotSpeed + .2 + .01*topDotSpeed, 0, 200);
 
-	fadeAll(250);
+	fadeAll(253);
 	FastLED.show();
 }
 
@@ -1662,48 +1427,6 @@ void travelingDotsToHighAndLow() {
 		topDotSpeed -= .85*topDotSpeed;
 		travelingDotBigSquareDesigns(3, 1);
 	}
-	travelingBottomDot(bottomDotSpeed);
-	travelingTopDot(topDotSpeed);
-
-	bottomDotSpeed = constrain(bottomDotSpeed + .2 + .01*bottomDotSpeed, 0, 200);
-	topDotSpeed = constrain(topDotSpeed + .2 + .01*topDotSpeed, 0, 200);
-
-	fadeAll(250);
-	FastLED.show();
-}
-
-void travelingDots(int mode) {
-
-	switch (mode) {
-	default:
-		mode = 1;
-		break;
-	case 1:
-		if (beatDetected[2] == 2) {
-			bottomDotSpeed -= .85*bottomDotSpeed;
-			topDotSpeed -= .85*topDotSpeed;
-			travelingDotBigSquareDesigns(1, 0);
-		}
-		break;
-	case 2:
-		if (beatDetected[2] == 2) {
-			bottomDotSpeed -= .85*bottomDotSpeed;
-			topDotSpeed -= .85*topDotSpeed;
-			travelingDotBigSquareDesigns(2, 0);
-		}
-		break;
-	case 3:
-		if (beatDetected[2] == 2) {
-			bottomDotSpeed -= .85*bottomDotSpeed;
-			travelingDotBigSquareDesigns(3, 0);
-		}
-		if (beatDetected[12] == 2) {
-			topDotSpeed -= .85*topDotSpeed;
-			travelingDotBigSquareDesigns(3, 1);
-		}
-		break;
-	}
-
 	travelingBottomDot(bottomDotSpeed);
 	travelingTopDot(topDotSpeed);
 
@@ -1761,36 +1484,12 @@ void travelingDotBigSquareDesigns(int mode, int option) {
 	}
 }
 
-//void travelingTopDot(double &topDotSpeed) {
-//  if (topDotTime > topDotSpeed) {
-//    for (int i = 0; i < 2; i++) {
-//      if (topDotZones[i] == 1) {
-//        topDots[i]++;
-//        if (topDots[i] >= cor17 - 0) {
-//          topDots[i] = cor21;
-//          topDotZones[i] = 2;
-//        }
-//      }
-//      if (topDotZones[i] == 2) {
-//        topDots[i]--;
-//        if (topDots[i] <= cor19 - 1) {
-//          topDots[i] = cor13;
-//          topDotZones[i] = 1;
-//        }
-//      }
-//      leds[topDots[i]] = CRGB::White;
-//      //topDotTime = 0;
-//    }
-//  }
-//}
-
-
 void travelingTopDot(double &topDotSpeed) {
 	if (topDotTime > topDotSpeed) {
 		for (int i = 0; i < 2; i++) {
 			if (topDotZones[i] == 1) {
 				topDots[i]++;
-				if (topDots[i] >= cor19 && topDots[i] <= cor21) {
+				if (topDots[i] >= cor19 && topDots[i] <= cor21) { // I believe the cor21 is useless
 					topDots[i] = cor23;
 					topDotZones[i] = 2;
 				}
@@ -1812,213 +1511,37 @@ void travelingBottomDot(double &bottomDotSpeed) {
 	if (bottomDotTime > bottomDotSpeed) {
 		for (int i = 0; i < 2; i++) {
 			bottomDots[i]++;
-			if (bottomDots[i] == cor13) bottomDots[i] = cor7;
+			if (bottomDots[i] >= cor13) bottomDots[i] = cor7;
 			leds[bottomDots[i]] = CRGB::White;
 			bottomDotTime = 0;
 		}
 	}
 }
 
-void pingPongSquares() {
-	fadeAll(253);
-
-	if (beatDetected[2] == 2) {
-		//lowFreqSquare != lowFreqSquare;
-		color = random(214, 300);
-		if (lowFreqSquare == false) { // bottom square
-			lowFreqSquare = true;
-			lightSide(10, color, 255, 255, 0, 0);
-			lightSide(11, color, 255, 255, 0, 0);
-			lightSide(12, color, 255, 255, 0, 0);
-			lightSide(13, color, 255, 255, 0, 0);
-			lightSide(8, color, 255, 255, 0, 0);
-			lightSide(9, color, 255, 255, 0, 0);
-		}
-		else {                   // top square
-			lowFreqSquare = false;
-			lightSide(16, color, 255, 255, 0, 0);
-			lightSide(17, color, 255, 255, 0, 0);
-			lightSide(18, color, 255, 255, 0, 0);
-			lightSide(19, color, 255, 255, 0, 0);
-			lightSide(24, color, 255, 255, 0, 0);
-			lightSide(25, color, 255, 255, 0, 0);
-		}
-
-	}
-	if (beatDetected[12] == 2) {
-		color = random(90, 180);
-		if (highFreqSquare == true) { // bottom small square, inside and out
-			highFreqSquare = false;
-			lightSide(14, color, 255, 255, 0, 0);
-			lightSide(15, color, 255, 255, 0, 0);
-		}
-		/*for (int i = 2; i < 5; i++) {
-		lightSide(i, color, 255, 255, 0, 0);
-		}*/
-		else {
-			highFreqSquare = true;
-			lightSide(1, color, 255, 255, 0, 0);
-			lightSide(28, color, 255, 255, 0, 0);
-			/*for (int i = 24; i < 27; i++) {
-			lightSide(i, color, 255, 255, 0, 0);
-			}*/
-		}
-	}
-
-	LEDS.show();
-}
-
-void randomSquares() {
-	fadeAll(253);
-
-	if (beatDetected[2] == 2) {
-		box = random(1, 6);
-		color = random(214, 300);
-		switch (box) {
-		case 1:  // Big square
-			lightSide(1, color, 255, 255, 0, 0);
-			lightSide(6, color, 255, 255, 0, 0);
-			lightSide(7, color, 255, 255, 0, 0);
-			lightSide(14, color, 255, 255, 0, 0);
-			lightSide(15, color, 255, 255, 0, 0);
-			lightSide(26, color, 255, 255, 0, 0);
-			lightSide(27, color, 255, 255, 0, 0);
-			lightSide(28, color, 255, 255, 0, 0);
-			break;
-		case 2: // bottom square
-			lightSide(10, color, 255, 255, 0, 0);
-			lightSide(11, color, 255, 255, 0, 0);
-			lightSide(12, color, 255, 255, 0, 0);
-			lightSide(13, color, 255, 255, 0, 0);
-			lightSide(8, color, 255, 255, 0, 0);
-			lightSide(9, color, 255, 255, 0, 0);
-			break;
-		case 3: // top square
-			lightSide(16, color, 255, 255, 0, 0);
-			lightSide(17, color, 255, 255, 0, 0);
-			lightSide(18, color, 255, 255, 0, 0);
-			lightSide(19, color, 255, 255, 0, 0);
-			lightSide(24, color, 255, 255, 0, 0);
-			lightSide(25, color, 255, 255, 0, 0);
-			break;
-		case 4: // inside of bottom smallest square
-			lightSide(6, color, 255, 255, 0, 0);
-			lightSide(7, color, 255, 255, 0, 0);
-			lightSide(8, color, 255, 255, 0, 0);
-			lightSide(9, color, 255, 255, 0, 0);
-			break;
-		case 5: // outside of bottom smallest square
-			lightSide(2, color, 255, 255, 0, 0);
-			lightSide(3, color, 255, 255, 0, 0);
-			lightSide(4, color, 255, 255, 0, 0);
-			lightSide(5, color, 255, 255, 0, 0);
-			break;
-		case 6: // inside of top smallest square
-			lightSide(24, color, 255, 255, 0, 0);
-			lightSide(25, color, 255, 255, 0, 0);
-			lightSide(26, color, 255, 255, 0, 0);
-			lightSide(27, color, 255, 255, 0, 0);
-			break;
-		case 7: // outside of top smallest square
-			lightSide(20, color, 255, 255, 0, 0);
-			lightSide(21, color, 255, 255, 0, 0);
-			lightSide(22, color, 255, 255, 0, 0);
-			lightSide(23, color, 255, 255, 0, 0);
-			break;
-		}
-	}
-
-	if (beatDetected[12] == 2) {
-		box = random(1, 6);
-		color = random(90, 180);
-		switch (box) {
-		case 1:  // Big square
-			lightSide(1, color, 255, 255, 0, 0);
-			lightSide(6, color, 255, 255, 0, 0);
-			lightSide(7, color, 255, 255, 0, 0);
-			lightSide(14, color, 255, 255, 0, 0);
-			lightSide(15, color, 255, 255, 0, 0);
-			lightSide(26, color, 255, 255, 0, 0);
-			lightSide(27, color, 255, 255, 0, 0);
-			lightSide(28, color, 255, 255, 0, 0);
-			break;
-		case 2: // bottom square
-			lightSide(10, color, 255, 255, 0, 0);
-			lightSide(11, color, 255, 255, 0, 0);
-			lightSide(12, color, 255, 255, 0, 0);
-			lightSide(13, color, 255, 255, 0, 0);
-			lightSide(8, color, 255, 255, 0, 0);
-			lightSide(9, color, 255, 255, 0, 0);
-			break;
-		case 3: // top square
-			lightSide(16, color, 255, 255, 0, 0);
-			lightSide(17, color, 255, 255, 0, 0);
-			lightSide(18, color, 255, 255, 0, 0);
-			lightSide(19, color, 255, 255, 0, 0);
-			lightSide(24, color, 255, 255, 0, 0);
-			lightSide(25, color, 255, 255, 0, 0);
-			break;
-		case 4: // inside of bottom smallest square
-			lightSide(6, color, 255, 255, 0, 0);
-			lightSide(7, color, 255, 255, 0, 0);
-			lightSide(8, color, 255, 255, 0, 0);
-			lightSide(9, color, 255, 255, 0, 0);
-			break;
-		case 5: // outside of bottom smallest square
-			lightSide(2, color, 255, 255, 0, 0);
-			lightSide(3, color, 255, 255, 0, 0);
-			lightSide(4, color, 255, 255, 0, 0);
-			lightSide(5, color, 255, 255, 0, 0);
-			break;
-		case 6: // inside of top smallest square
-			lightSide(24, color, 255, 255, 0, 0);
-			lightSide(25, color, 255, 255, 0, 0);
-			lightSide(26, color, 255, 255, 0, 0);
-			lightSide(27, color, 255, 255, 0, 0);
-			break;
-		case 7: // outside of top smallest square
-			lightSide(20, color, 255, 255, 0, 0);
-			lightSide(21, color, 255, 255, 0, 0);
-			lightSide(22, color, 255, 255, 0, 0);
-			lightSide(23, color, 255, 255, 0, 0);
-			break;
-		}
-	}
-
-	FastLED.show();
-}
-
 void forTesting() {
 	//input testing
-	if (button1.released()) {
-		Serial.println("released");
-	}
-	//Serial.print(button1.released());
-	/*Serial.print("\t");
+	/*if (button1.released()) {
+	Serial.println("released");
+	}*/
+
+	delay(analogRead(brightnessPot));
+	Serial.print(button1.released());
+	Serial.print("\t");
 	Serial.print(button2.released());
 	Serial.print("\t");
 	Serial.print(digitalRead(inputSwitch));
 	Serial.print("\t");
 	Serial.print(digitalRead(reactiveSwitch));
 	Serial.print("\t");
-	Serial.println(analogRead(brightnessPot));*/
+	Serial.println(analogRead(brightnessPot));
 
-	// Sidse 7 and 8 have weird corrections in the code
-	//lightSide(7, 0, 255, 255, 0, 0);
-	//lightSide(8, 0, 255, 255, 0, 0);
 	//LEDS.show();
 }
 
 void confetti() {
 	int max_num_of_sparkles = 25;  // old 14
-								   //int brightnessMax = 10;
-	brightness = 255;
 
-	//for (int i = 0; i < 343; i++) {
-	//  if (leds[i].h = colorOne) break;
-	//}
-	//colorTwo = random8(255);
-	//if (yintLow == -8) colorOne = random8(255);
+	brightness = 255;
 
 	EVERY_N_SECONDS(10) {                // Every 10 seconds, change the color of the low freq color (1) and high freq color (2)
 		colorOne = random8(0, 64);
@@ -2056,6 +1579,79 @@ void confetti() {
 	LEDS.show();
 }
 
+void sixFrequencyGlitter_palette() {
+	currentPalette = usa_p;
+	//int max_num_of_sparkles = 25;
+	//2 4 7 10 12
+	spectrumValue[2] = map(constrain(spectrumValue[2] - 50, 0, 500), 0, 500, 0, 25); // " - 50" exists to get rid of low volume noise
+	spectrumValue[4] = map(constrain(spectrumValue[4] - 50, 0, 500), 0, 500, 0, 25);
+	spectrumValue[7] = map(constrain(spectrumValue[7] - 50, 0, 500), 0, 500, 0, 25);
+	spectrumValue[10] = map(constrain(spectrumValue[10] - 50, 0, 450), 0, 500, 0, 25);
+	spectrumValue[12] = map(constrain(spectrumValue[12] - 50, 0, 450), 0, 500, 0, 25);
+
+	// 1.9 is an arbitrary number that dictates how mnuch glitter shows up for how loud the frequency is
+	for (int i = 0; i < spectrumValue[2] * 1.9; i++) {
+		int pos = random16(cor9, cor13);
+		//brightness = map(spectrumValue[2], 0, 14, 0, 255);
+		//leds[pos] = CHSV(0, random8(200, 255), brightness);
+		leds[pos] = ColorFromPalette(currentPalette, 0, 170, currentBlending);
+		//leds[i] = ColorFromPalette(currentPalette, map(radius, 0, 36, 0, 255) + hue, 255, currentBlending);
+	}
+
+	for (int i = 0; i < spectrumValue[4] * 1.9; i++) {
+		int pos = random16(cor1, cor9);
+		//brightness = map(spectrumValue[4], 0, 14, 0, 255);
+		//leds[pos] = CHSV(32, random8(200, 255), brightness);
+		leds[pos] = ColorFromPalette(currentPalette, 51, 170, currentBlending);
+	}
+
+	for (int i = 0; i < spectrumValue[7] * 1.9; i++) {
+		int pos = random16(cor13, cor14);
+		//brightness = map(spectrumValue[7], 0, 14, 0, 255);
+		//leds[pos] = CHSV(96, random8(200, 255), brightness);
+		leds[pos] = ColorFromPalette(currentPalette, 102, 170, currentBlending);
+	}
+
+	for (int i = 0; i < spectrumValue[7] * 1.9; i++) {
+		int pos = random16(cor14, cor15);
+		//brightness = map(spectrumValue[7], 0, 14, 0, 255);
+		//leds[pos] = CHSV(96, random8(200, 255), brightness);
+		leds[pos] = ColorFromPalette(currentPalette, 153, 170, currentBlending);
+	}
+
+	for (int i = 0; i < spectrumValue[7] * 1.9; i++) {
+		int pos = random16(cor27, cor28);
+		//brightness = map(spectrumValue[7], 0, 14, 0, 255);
+		//leds[pos] = CHSV(64, random8(200, 255), brightness);
+		leds[pos] = ColorFromPalette(currentPalette, 153, 170, currentBlending);
+	}
+
+	for (int i = 0; i < spectrumValue[7] * 1.9; i++) {
+		int pos = random16(0, cor1);
+		//brightness = map(spectrumValue[7], 0, 14, 0, 255);
+		//leds[pos] = CHSV(64, random8(200, 255), brightness);
+		leds[pos] = ColorFromPalette(currentPalette, 102, 170, currentBlending);
+	}
+
+	for (int i = 0; i < spectrumValue[10] * 1.9; i++) {
+		int pos = random16(cor19, cor27);
+		//brightness = map(spectrumValue[10], 0, 14, 0, 255);
+		//leds[pos] = CHSV(160, random8(200, 255), brightness);
+		leds[pos] = ColorFromPalette(currentPalette, 170, 170, currentBlending);
+	}
+
+	for (int i = 0; i < spectrumValue[12] * 1.9; i++) {
+		int pos = random16(cor15, cor19);
+		//brightness = map(spectrumValue[12], 0, 14, 0, 255);
+		//leds[pos] = CHSV(209, random8(200, 255), brightness);
+		leds[pos] = ColorFromPalette(currentPalette, 204, 170, currentBlending);
+	}
+
+	fadeAll(240);
+	//fadeToBlackBy(leds, NUM_LEDS, 1);
+	LEDS.show();
+}
+
 void sixFrequencyGlitter() {
 	brightness = 255;
 	//int max_num_of_sparkles = 25;
@@ -2080,7 +1676,13 @@ void sixFrequencyGlitter() {
 	}
 
 	for (int i = 0; i < spectrumValue[7] * 1.9; i++) {
-		int pos = random16(cor13, cor15);
+		int pos = random16(cor13, cor14);
+		//brightness = map(spectrumValue[7], 0, 14, 0, 255);
+		leds[pos] = CHSV(96, random8(200, 255), brightness);
+	}
+
+	for (int i = 0; i < spectrumValue[7] * 1.9; i++) {
+		int pos = random16(cor14, cor15);
 		//brightness = map(spectrumValue[7], 0, 14, 0, 255);
 		leds[pos] = CHSV(96, random8(200, 255), brightness);
 	}
@@ -2109,22 +1711,14 @@ void sixFrequencyGlitter() {
 		leds[pos] = CHSV(209, random8(200, 255), brightness);
 	}
 
-	fadeAll(252);
+	fadeAll(251);
 	//fadeToBlackBy(leds, NUM_LEDS, 1);
 	LEDS.show();
 }
 
-// Couldn't get this function to work, currently not used
-void sparkle(int frequency, int start, int stop, int hue, int sat, int vol, int max) {
-	for (int i = 0; i < frequency; i++) {  // For as loud as the low frequency is, 
-		int pos = random8(start, stop);
-		if (vol == 0) vol = map(frequency, 0, max, 0, 255);
-		leds[pos] = CHSV(hue, sat, vol);
-	}
-}
-
 void ambient_rainbowFade() {
-	speed = map(analogRead(A1), 0, 1023, 0, 200);
+	//speed = map(analogRead(A1), 0, 1023, 0, 200);
+	speed = 0;
 	if (time > speed) {
 		hue++;
 		time = 0;
@@ -2136,14 +1730,16 @@ void ambient_rainbowFade() {
 }
 
 void ambient_solidColor() {
-	hue = map(analogRead(A1), 0, 1023, 0, 255);
+	//hue = map(analogRead(A1), 0, 1023, 0, 255);
+	hue = 0;
 
 	for (int i = 0; i < NUM_LEDS; i++) leds[i] = CHSV(hue, 255, 255);
 	LEDS.show();
 }
 
 void ambient_confetti() {
-	int intensity = map(analogRead(A1), 0, 1023, 0, 50);
+	//int intensity = map(analogRead(A1), 0, 1023, 0, 50);
+	int intensity = 20;
 
 	for (int i = 0; i < intensity; i++) {
 		int pos = random16(NUM_LEDS);
@@ -2151,36 +1747,9 @@ void ambient_confetti() {
 		leds[pos] = CHSV(hue, 255, random8(150, 255));
 	}
 
-	fadeAll(253);
+	fadeAll(250);
 	LEDS.show();
 }
-
-//int pennyPress(int penny) {
-//  int releasedThreshold = 2200;
-//  int touchedThreshold = 2500;
-//  double pennyDelayTime = 400;
-//
-//  pennyNew = (penny == 1) ? penny1.capacitiveSensor(50) : penny2.capacitiveSensor(50);
-//
-//  bool isGreaterThanDebounce = pennyDelay > pennyDelayTime;       // True if time passed is greater than the debounce time
-//  bool thresholdReached = pennyOld < releasedThreshold;     // True if last reading is below threshold (not touched)
-//  bool touched = pennyNew > touchedThreshold;           // True if new reading is greater than threshold (touched)
-//
-//  if (isGreaterThanDebounce && thresholdReached && touched) {      // If there is a jump in value greater than 1000
-//    pennyCounter++;            // Increment touch counter
-//    pennyDelay = 0;                    // Initialize debounce timer at 0
-//    return 1;
-//  }
-//  else {
-//    return 0;
-//  }
-//  // DEBUGGING INFO
-//  //Serial.print(pennyNew);
-//  //Serial.print("\t");
-//  //Serial.println(pennyCounter);
-//
-//  pennyOld = pennyNew;
-//}
 
 void SolidColorMode() {
 
@@ -2201,7 +1770,7 @@ void SolidColorMode() {
 }
 
 void ambient_rainbow() {
-	delay(analogRead(A1));
+	//delay(100);
 
 	for (int i = 0; i < NUM_LEDS; i++) {
 		int temp = -1 * ledx[i] + ledy[i];
@@ -2267,7 +1836,7 @@ void beatMeter() {
 	}
 	highSpeed = constrain(highSpeed + .2 + .01*highSpeed, 0, 200);
 	lowSpeed = constrain(lowSpeed + .2 + .01*lowSpeed, 0, 200);
-	fadeAll(253);
+	fadeAll(254);
 	LEDS.show();
 }
 
@@ -2280,11 +1849,7 @@ void circle_midOut_One_Experimental() {   // This mode shows a circle expanding 
 
 	//brightness = 255 - (radius - 10) * 6;   // Makes brightness decrease as radius goes up (radius goes up)
 	brightness = 255;
-	// Old way of doing the speed of the radius increments
-	/*if (time1 > radius - 10) {
-	radius = radius + .5;
-	time1 = 0;
-	}*/
+
 	if (radius > 38) sweepStatus = true;  // When the circle is done growing, start the confetti
 	else sweepStatus = false;
 
@@ -2332,7 +1897,29 @@ void circle_midOut_One_Experimental() {   // This mode shows a circle expanding 
 		}
 	}
 
-	speed = constrain(speed + .15 + .02*speed, 0, 180);  // old is .1
-	fadeAll(250);
+	speed = constrain(speed + .15 + .02*speed, 0, 180);  // old is .1 and adding .15
+	fadeAll(254);
 	LEDS.show();
 }
+
+const TProgmemPalette16 myRedWhiteBluePalette_p PROGMEM =
+{
+	CRGB::Red,
+	CRGB::White, // 'white' is too bright compared to red and blue
+	CRGB::Blue,
+	CRGB::Black,
+
+	CRGB::Red,
+	CRGB::Gray,
+	CRGB::Blue,
+	CRGB::Black,
+
+	CRGB::Red,
+	CRGB::Red,
+	CRGB::Gray,
+	CRGB::Gray,
+	CRGB::Blue,
+	CRGB::Blue,
+	CRGB::Black,
+	CRGB::Black,
+};
