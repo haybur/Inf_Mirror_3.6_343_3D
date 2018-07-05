@@ -377,7 +377,7 @@ void fillStats() {
 	// If over 13 of the 15 frequencies are silent, 
 	// reset the statistics because it's likely the song ended
 	for (int i = 0; i < 15; i++) {
-		if (spectrumValue[i] < 3) // 3 is an arbitrary number but it means it is basically silent
+		if (spectrumValue[i] < 1) // 3 is an arbitrary number but it means it is basically silent
 			silenceCounter++;
 		else
 			silenceDuration = 0;
